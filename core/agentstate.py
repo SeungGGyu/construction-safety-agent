@@ -15,6 +15,7 @@ class AgentState(TypedDict):
     # 3) 검색 단계 산출물
     retrieved: NotRequired[list[Document]]  # 원본 검색 결과
     selected: NotRequired[list[Document]]   # 재랭크/필터 후 컨텍스트로 쓸 하위셋
+    sources: NotRequired[list[dict[str, Any]]]  # 간단한 출처 요약 (filename, page, idx 등)
 
     # 4) 생성/검증 단계 산출물
     draft: NotRequired[str]                 # 1차 초안(검증 전)
@@ -26,6 +27,8 @@ class AgentState(TypedDict):
     route: NotRequired[str]                       # 라우터가 선택한 경로 태그
     meta: NotRequired[dict[str, Any]]             # 기타 상태(스텝 카운트, 플래그 등)
 
+    # 루프 제어
     retries: int                 # generate/rewrite 루프 카운트
     web_fallback: bool           # 웹 보강을 시도할지 플래그
     candidate_answer: str        # generate 직후 임시 답변(검증용)
+

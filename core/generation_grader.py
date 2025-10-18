@@ -1,11 +1,10 @@
-# 그대로 덮어쓰기: 한국어 지시문 + JSON은 yes/no 강제
+# generation_grader.py
 from pydantic import BaseModel, Field, ValidationError
 from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import PromptTemplate
 from langchain_core.exceptions import OutputParserException
 import re, json
 from core.agentstate import AgentState
-from core.kanana import KANANA
 
 SAFE_YES = {"yes","y","예","네","맞음","true"}
 SAFE_NO  = {"no","n","아니오","아님","false"}
@@ -24,7 +23,7 @@ def _safe_extract_yesno(text: str) -> str:
     if v in {"아니오","아님","false"}: return "no"
     return v
 
-def get_hallucination_grader():
+def get_hallucination_grader(llm):
     class GradeHallucinations(BaseModel):
         binary_score: str = Field(
             description="'yes'이면 사실(FACTS)에 근거, 'no'이면 근거 없음"
@@ -48,9 +47,9 @@ def get_hallucination_grader():
         input_variables=["documents","generation"],
         partial_variables={"format_instructions": parser.get_format_instructions()},
     )
-    return prompt | KANANA | parser
+    return prompt | llm | parser
 
-def get_answer_grader():
+def get_answer_grader(llm):
     class GradeAnswer(BaseModel):
         binary_score: str = Field(
             description="'yes'이면 답변이 질문을 해결, 'no'이면 해결 못함"
@@ -74,19 +73,22 @@ def get_answer_grader():
         input_variables=["question","generation"],
         partial_variables={"format_instructions": parser.get_format_instructions()},
     )
-    return prompt | KANANA | parser
-
+    return prompt | llm | parser
 
 MAX_RETRIES = 3
 
-def grade_generation(state: AgentState) -> str:
+def grade_generation(state: AgentState, llm) -> str:
+    """
+    생성 결과 평가기
+    - llm: KANANA 또는 QWEN (main.py에서 주입)
+    """
     question = state.get("query") or state["messages"][0].content
     docs = state.get("selected") or state.get("retrieved") or []
     generation = state.get("candidate_answer", state["messages"][-1].content)
     retries = state.get("retries", 0)
     web_fallback = state.get("web_fallback", True)
 
-    hall_chain = get_hallucination_grader()
+    hall_chain = get_hallucination_grader(llm)
     try:
         hall_obj = hall_chain.invoke({
             "documents": "\n\n".join(d.page_content for d in docs[:8]),
@@ -94,19 +96,19 @@ def grade_generation(state: AgentState) -> str:
         })
         hall = (hall_obj.binary_score or "").strip().lower()
     except (OutputParserException, ValidationError):
-        raw = KANANA.invoke(
+        raw = llm.invoke(
             f"FACTS:\n{''.join(d.page_content for d in docs[:4])}\n\nGENERATION:\n{generation}\n"
             "Answer only as JSON: {\"binary_score\":\"yes|no\"}"
         ).content
         hall = _safe_extract_yesno(raw)
 
     if hall == "yes":
-        ans_chain = get_answer_grader()
+        ans_chain = get_answer_grader(llm)
         try:
             ans_obj = ans_chain.invoke({"question": question, "generation": generation})
             ans = (ans_obj.binary_score or "").strip().lower()
         except (OutputParserException, ValidationError):
-            raw = KANANA.invoke(
+            raw = llm.invoke(
                 f"QUESTION:\n{question}\n\nANSWER:\n{generation}\n"
                 "Answer only as JSON: {\"binary_score\":\"yes|no\"}"
             ).content
@@ -118,4 +120,3 @@ def grade_generation(state: AgentState) -> str:
             return "rewrite" if retries < MAX_RETRIES else ("websearch" if web_fallback else "finalize_response")
     else:
         return "generate" if retries < MAX_RETRIES else ("websearch" if web_fallback else "finalize_response")
-

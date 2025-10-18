@@ -29,13 +29,13 @@ def make_kanana_llm(
         torch_dtype=dtype,
         trust_remote_code=True,
         low_cpu_mem_usage=True,
-    ).to("cuda:0")
+    ).to("cuda:1")
 
     gen = pipeline(
         task="text-generation",
         model=model,
         tokenizer=tok,
-        device=0,                     # 파이프라인도 GPU 0 사용
+        device=1,                     # 파이프라인도 GPU 0 사용
         return_full_text=False,
         do_sample=(temperature > 0),
         temperature=temperature,

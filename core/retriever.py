@@ -1,6 +1,6 @@
-# retriever.py
-
-from langchain.embeddings import HuggingFaceEmbeddings
+from transformers import AutoModel, AutoTokenizer
+import torch
+from langchain.embeddings.base import Embeddings
 from langchain.vectorstores import FAISS
 from langchain.retrievers import BM25Retriever, EnsembleRetriever, ContextualCompressionRetriever
 from langchain.retrievers.document_compressors import CrossEncoderReranker
@@ -9,6 +9,48 @@ from langchain.schema import Document
 from typing import Dict, Any, List
 
 
+# === Qwen 전용 Embeddings 클래스 ===
+class QwenEmbeddings(Embeddings):
+    def __init__(self, model_name="Qwen/Qwen3-Embedding-4B", output_dim=768):
+        self.tok = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        self.model = AutoModel.from_pretrained(
+            model_name,
+            trust_remote_code=True,
+            device_map="auto",
+            torch_dtype=torch.bfloat16
+        )
+        self.output_dim = output_dim
+
+    def _mean_pool(self, outputs, inputs):
+        # CLS/SEP 무시하고 평균 pooling
+        token_embeddings = outputs.last_hidden_state
+        attention_mask = inputs["attention_mask"]
+        mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+        sum_embeddings = torch.sum(token_embeddings * mask_expanded, 1)
+        sum_mask = torch.clamp(mask_expanded.sum(1), min=1e-9)
+        mean_pooled = sum_embeddings / sum_mask
+        return mean_pooled
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        inputs = self.tok(texts, padding=True, truncation=True, return_tensors="pt").to(self.model.device)
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+            pooled = self._mean_pool(outputs, inputs)
+            pooled = pooled[:, :self.output_dim]  # ✅ DB 차원에 맞게 슬라이싱
+            vectors = pooled.to(torch.float32).cpu().numpy()
+        return vectors.tolist()
+
+    def embed_query(self, text: str) -> List[float]:
+        inputs = self.tok([text], padding=True, truncation=True, return_tensors="pt").to(self.model.device)
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+            pooled = self._mean_pool(outputs, inputs)
+            pooled = pooled[:, :self.output_dim]
+            vector = pooled.to(torch.float32).cpu().numpy()[0]
+        return vector.tolist()
+
+
+# === RerankRetriever 정의 ===
 class RerankRetriever:
     """
     Hybrid Retriever(Dense + BM25 + Cross-Encoder Reranker)
@@ -34,7 +76,8 @@ class RerankRetriever:
         print("✅ RerankRetriever 생성 완료")
 
     def _setup(self):
-        embeddings = HuggingFaceEmbeddings(model_name=self.embedding_model)
+        embeddings = QwenEmbeddings(model_name=self.embedding_model)
+
         content_db = FAISS.load_local(
             self.faiss_db_path, embeddings, allow_dangerous_deserialization=True
         )
@@ -68,28 +111,35 @@ class RerankRetriever:
 # === LangGraph용 Node 함수 ===
 retriever_instance = RerankRetriever(
     faiss_db_path="/home/user/Desktop/jiseok/capstone/RAG/DB/construction_safety_guidelines_faiss",
-    embedding_model="snunlp/KR-SBERT-V40K-klueNLI-augSTS",
+    embedding_model="Qwen/Qwen3-Embedding-4B",
     reranker_model="BAAI/bge-reranker-v2-m3",
     top_k=8,
-    ensemble_weights=(0.2, 0.8),
+    ensemble_weights=(0.3, 0.7),
 )
 
 def retrieve_node(state: Dict[str, Any]) -> Dict[str, Any]:
     query = state["query"]
     docs = retriever_instance.retrieve(query)
 
-    # 컨텍스트 문자열 합치기 (인용번호 붙이기)
+    # 본문 + 파일명/페이지 같이 표시
     docs_text = "\n\n".join(
-        f"[{i+1}] {doc.page_content}" for i, doc in enumerate(docs)
+        f"[{i+1}] ({doc.metadata.get('filename','?')} p.{doc.metadata.get('page','?')})\n{doc.page_content}"
+        for i, doc in enumerate(docs)
     )
+
+    # sources: filename/page/idx만 간결하게 정리
+    sources = [
+        {
+            "idx": i + 1,
+            "filename": doc.metadata.get("filename", ""),
+            "page": doc.metadata.get("page", ""),
+        }
+        for i, doc in enumerate(docs)
+    ]
 
     return {
         "retrieved": docs,
         "selected": docs,
         "docs_text": docs_text,
-        "sources": [
-            {"idx": i+1, "title": doc.metadata.get("title", ""), "url": doc.metadata.get("url", "")}
-            for i, doc in enumerate(docs)
-        ],
+        "sources": sources,
     }
-

@@ -1,7 +1,9 @@
+# core/generate.py
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import AIMessage
 from core.agentstate import AgentState
+from core.kanana import KANANA  # ✅ 내부에서 LLM 직접 불러오기
 
 # === 프롬프트 정의 (관련 규정은 제외) ===
 RAG_PROMPT = ChatPromptTemplate.from_messages([
@@ -37,11 +39,12 @@ RAG_PROMPT = ChatPromptTemplate.from_messages([
      "TOOL_OUTPUT:\n{tool_output}")
 ])
 
+
 # === 보고서 생성 함수 ===
-def generate(state: AgentState, llm):
+def generate(state: AgentState):
     """
     건설 사고 보고서 1차 생성 노드
-    - llm: KANANA 또는 QWEN (main.py에서 주입)
+    (llm 인자 제거 — 내부에서 KANANA 직접 호출)
     """
     q = state.get("query") or state["messages"][0].content
     sel = state.get("selected") or state.get("retrieved") or []
@@ -50,15 +53,15 @@ def generate(state: AgentState, llm):
     ctx = "\n\n".join(f"[{i+1}] {d.page_content}" for i, d in enumerate(sel[:8]))
     tool_out = state.get("tool_output", "")
 
-    # LLM으로 사고 개요/위험 요인/즉시 조치 생성
-    chain = RAG_PROMPT | llm | StrOutputParser()
+    # ✅ LLM으로 사고 개요/위험 요인/즉시 조치 생성
+    chain = RAG_PROMPT | KANANA | StrOutputParser()
     body_answer = chain.invoke({
         "context": ctx,
         "tool_output": tool_out,
         "question": q,
     })
 
-    # SOURCES: retriever.py에서 만들어둔 sources 활용 → 관련 규정은 코드에서 직접 생성
+    # ✅ SOURCES: retriever에서 생성된 sources 사용
     src_list = state.get("sources", [])
     if src_list:
         related = "\n".join(
@@ -69,7 +72,7 @@ def generate(state: AgentState, llm):
     else:
         related_section = "\n\n**관련 규정**:\n정보 부족. 추가 문서를 제시해 주세요."
 
-    # 최종 답변 합치기
+    # ✅ 최종 답변 합치기
     answer = body_answer + related_section
 
     if "정보 부족" in answer or len(sel) == 0:

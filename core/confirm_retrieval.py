@@ -35,8 +35,18 @@ def confirm_retrieval(state: AgentState):
     excluded_indices = []
     if exclude_input:
         try:
-            excluded_indices = [int(x.strip()) - 1 for x in exclude_input.split(",") if x.strip().isdigit()]
-            print(f"🚫 제외 문서 번호: {excluded_indices}")
+            max_idx = len(docs)
+            # 1~N → 0~N-1 변환, 범위 확인
+            excluded_indices = [
+                int(x.strip()) - 1
+                for x in exclude_input.split(",")
+                if x.strip().isdigit() and 1 <= int(x.strip()) <= max_idx
+            ]
+
+            # ✅ 표시할 때는 항상 사용자 기준 번호(+1)
+            display_nums = [i + 1 for i in excluded_indices]
+            print(f"🚫 제외 문서 번호: {display_nums}")
+
         except Exception:
             print("⚠️ 제외 번호 입력을 이해할 수 없습니다. 모든 문서를 유지합니다.")
             excluded_indices = []
@@ -46,7 +56,24 @@ def confirm_retrieval(state: AgentState):
     print(f"\n✅ {len(selected_docs)}개 문서를 유지하고 다음 단계로 진행합니다.")
 
     return {
-        "selected": selected_docs,
-        "docs_text": "\n\n".join(f"[{i+1}] {d.page_content}" for i, d in enumerate(selected_docs)),
-        "route": "generate",
-    }
+    # ✅ 덮어쓰기: retrieved, selected, docs_text 모두 새 리스트로 대체
+    "retrieved": selected_docs,
+    "selected": selected_docs,
+    "docs_text": "\n\n".join(f"[{i+1}] {d.page_content}" for i, d in enumerate(selected_docs)),
+
+    # ✅ sources도 새로 만들어줌 (generate에 그대로 전달됨)
+    "sources": [
+        {
+            "idx": i + 1,
+            "filename": d.metadata.get("filename", "?"),
+            "page": d.metadata.get("page", "?"),
+        }
+        for i, d in enumerate(selected_docs)
+    ],
+
+    # ✅ route
+    "route": "generate",
+}
+
+
+

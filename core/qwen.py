@@ -4,7 +4,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 from langchain_huggingface import ChatHuggingFace, HuggingFacePipeline
 
 from transformers import AutoTokenizer
-from auto_gptq import AutoGPTQForCausalLM   # GPTQ Àü¿ë ·Î´õ
+from auto_gptq import AutoGPTQForCausalLM   # GPTQ ï¿½ï¿½ï¿½ï¿½ ï¿½Î´ï¿½
 
 QWEN_ID = "Qwen/Qwen3-30B-A3B-GPTQ-Int4"
 
@@ -16,12 +16,10 @@ def make_qwen_llm(model_id=QWEN_ID):
         trust_remote_code=True,
         use_safetensors=True,
      )
-    # pipeline »ý¼º (langchain-huggingface¿Í È£È¯)
-    from transformers import pipeline
-    from langchain_huggingface import HuggingFacePipeline
+    
+    # pipeline ï¿½ï¿½ï¿½ï¿½ (langchain-huggingfaceï¿½ï¿½ È£È¯)
+   
     pipe = pipeline("text-generation", model=model, tokenizer=tokenizer, device=0)
     return HuggingFacePipeline(pipeline=pipe)
 
-
-# ? Qwen ChatModel °´Ã¼
 QWEN = make_qwen_llm()

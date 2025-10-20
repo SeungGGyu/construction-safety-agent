@@ -1,8 +1,5 @@
-# main.py
-import argparse
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage
-
 from core.agentstate import AgentState
 from core.retriever import retrieve_node
 from core.generate import generate
@@ -10,33 +7,27 @@ from core.rewrite import rewrite
 from core.websearch import websearch
 from core.finalize_response import finalize_response
 from core.generation_grader import grade_generation
-from core.query import query
-from core.final_report import generate_accident_report
+from core.query import query  
+from core.kanana import KANANA 
+from core.final_report import generate_accident_report_node
+from core.report_grader import grade_report_quality
+import sys
+import logging
+from dotenv import load_dotenv
+import os
 
-# 모델 불러오기
 
-# === argparse 추가 ===
-parser = argparse.ArgumentParser()
-parser.add_argument("--model", type=str, default="kanana", choices=["kanana", "qwen"])
-args = parser.parse_args()
-
-if args.model == "kanana":
-    from core.kanana import KANANA
-    LLM = KANANA
-    print("🚀 Using KANANA model")
-else:
-    from core.qwen import QWEN
-    LLM = QWEN
-    print("🚀 Using QWEN model")
-
-# === 4) 그래프 구성 ===
+# === 4) 그래프 구성: 노드에는 '함수'를 넣어야 함! ===
 graph = StateGraph(AgentState)
 
 graph.add_node("retrieve", retrieve_node)
-graph.add_node("generate", lambda state: generate(state, llm=LLM))  # ← 모델 주입
-graph.add_node("rewrite", lambda state: rewrite(state, llm=LLM))
+graph.add_node("generate", generate)
+graph.add_node("rewrite", rewrite)
 graph.add_node("websearch", websearch)
 graph.add_node("finalize_response", finalize_response)
+graph.add_node("generate_accident_report", generate_accident_report_node) 
+graph.add_node("grade_report_quality", grade_report_quality) 
+
 
 graph.set_entry_point("retrieve")
 graph.add_edge("retrieve", "generate")
@@ -44,35 +35,49 @@ graph.add_edge("rewrite", "retrieve")
 graph.add_edge("websearch", "generate")
 graph.add_conditional_edges(
     "generate",
-    lambda state: grade_generation(state, llm=LLM),  
+    grade_generation,
     {
-        "generate": "generate",
-        "rewrite": "rewrite",
-        "websearch": "websearch",
-        "finalize_response": "finalize_response",
+        "generate": "generate",               # 환각 → 재생성
+        "rewrite": "rewrite",                 # 유용하지 않음 → 질문 리라이트
+        "websearch": "websearch",             # 최대 반복 도달 → 웹 보강
+        "finalize_response": "finalize_response",  # grounded + useful → 종료
     },
 )
 
-graph.add_edge("finalize_response", END)
+# graph.add_edge("finalize_response", END)
+# ✅ finalize_response 이후 보고서 생성으로 연결
+
+
+# 보고서 생성 및 품질 평가 ===
+graph.add_edge("finalize_response", "generate_accident_report")
+
+graph.add_conditional_edges(
+    "generate_accident_report",
+    grade_report_quality,  # ✅ 보고서 충분성 평가
+    {
+        "insufficient": "websearch",  # 부족하면 다시 웹 검색 후 재작성
+        "adequate": END               # 충분하면 종료
+    },
+)
+
 
 app = graph.compile()
 
-# 초기 state
-init_question = query[6]
+
+init_question = query[0]  # 네가 만든 query 리스트에서 하나 선택
+
 init_state: AgentState = {
     "messages": [HumanMessage(content=init_question)],
     "query": init_question,
-    "retries": 0,
-    "web_fallback": True,
+    "retries": 0,          # 새로 추가한 필드
+    "web_fallback": True,  # 웹 보강 허용 여부
 }
 
 final_state = app.invoke(init_state)
 
-rag_output = final_state["messages"][-1].content
-print("\n=== 최종 응답 ===\n")
-print(rag_output)
+# print("\n=== 최종 응답 ===\n")
+# print(final_state["messages"][-1].content)
 
-# 보고서 생성기로 전달
-report = generate_accident_report(rag_output)
-print("\n===== 건설 사고 재발 방지 대책 보고서 초안 =====\n")
-print(report)
+
+print("\n=== 🔹 건설 사고 재발 방지 대책 보고서 생성 결과 ===\n")
+print(final_state.get("report", "⚠️ 보고서 생성 실패"))

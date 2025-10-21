@@ -1,11 +1,13 @@
 from transformers import AutoModel, AutoTokenizer
 import torch
 from langchain.embeddings.base import Embeddings
-from langchain.vectorstores import FAISS
-from langchain.retrievers import BM25Retriever, EnsembleRetriever, ContextualCompressionRetriever
-from langchain.retrievers.document_compressors import CrossEncoderReranker
-from langchain_community.cross_encoders import HuggingFaceCrossEncoder
 from langchain.schema import Document
+from langchain_community.vectorstores import FAISS
+from langchain_community.retrievers import BM25Retriever
+from langchain.retrievers.ensemble import EnsembleRetriever
+from langchain.retrievers.contextual_compression import ContextualCompressionRetriever
+from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+from langchain.retrievers.document_compressors import CrossEncoderReranker
 from typing import Dict, Any, List
 
 
@@ -62,7 +64,7 @@ class RerankRetriever:
         embedding_model: str,
         reranker_model: str,
         top_k: int = 10,
-        ensemble_weights: tuple = (0.7, 0.3),
+        ensemble_weights: tuple = (0.5, 0.5),
     ):
         self.faiss_db_path = faiss_db_path
         self.embedding_model = embedding_model

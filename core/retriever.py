@@ -64,7 +64,7 @@ class RerankRetriever:
         embedding_model: str,
         reranker_model: str,
         top_k: int = 10,
-        ensemble_weights: tuple = (0.7, 0.3),
+        ensemble_weights: tuple = (0.5, 0.5),
     ):
         self.faiss_db_path = faiss_db_path
         self.embedding_model = embedding_model

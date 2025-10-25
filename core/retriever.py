@@ -1,55 +1,68 @@
+from openai import OpenAI
 from transformers import AutoModel, AutoTokenizer
 import torch
-from langchain.embeddings.base import Embeddings
-from langchain.schema import Document
+
+# === LangChain Core ===
+from langchain_core.embeddings import Embeddings
+from langchain_core.documents import Document
+
+# === VectorStore ===
 from langchain_community.vectorstores import FAISS
+
+# === Retrievers ===
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers.ensemble import EnsembleRetriever
 from langchain.retrievers.contextual_compression import ContextualCompressionRetriever
-from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+
+# === Reranker / Compressor ===
 from langchain.retrievers.document_compressors import CrossEncoderReranker
+from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+
 from typing import Dict, Any, List
+import numpy as np
 
 
-# === Qwen 전용 Embeddings 클래스 ===
+# === 🔹 외부 Qwen3 임베딩 API 설정 ===
+embedder_model_name = "Qwen/Qwen3-Embedding-4B"
+embedder_base_url = "http://211.47.56.71:15653/v1"
+embedder_api_key = "token-abc123"
+
+embed_client = OpenAI(
+    base_url=embedder_base_url,
+    api_key=embedder_api_key
+)
+
+
+# === Qwen 임베딩 API 기반 Embeddings 클래스 ===
 class QwenEmbeddings(Embeddings):
-    def __init__(self, model_name="Qwen/Qwen3-Embedding-4B", output_dim=768):
-        self.tok = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        self.model = AutoModel.from_pretrained(
-            model_name,
-            trust_remote_code=True,
-            device_map="auto",
-            torch_dtype=torch.bfloat16
-        )
+    """
+    Qwen3 임베딩 API 호출 기반 Embeddings 클래스
+    (로컬 모델 로딩 대신 HTTP 요청으로 벡터 생성)
+    """
+
+    def __init__(self, model_name=embedder_model_name, output_dim=768):
+        self.model_name = model_name
         self.output_dim = output_dim
 
-    def _mean_pool(self, outputs, inputs):
-        # CLS/SEP 무시하고 평균 pooling
-        token_embeddings = outputs.last_hidden_state
-        attention_mask = inputs["attention_mask"]
-        mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
-        sum_embeddings = torch.sum(token_embeddings * mask_expanded, 1)
-        sum_mask = torch.clamp(mask_expanded.sum(1), min=1e-9)
-        mean_pooled = sum_embeddings / sum_mask
-        return mean_pooled
+    def _get_embedding(self, text: str) -> List[float]:
+        """단일 텍스트에 대한 임베딩 요청"""
+        response = embed_client.embeddings.create(
+            model=self.model_name,
+            input=text
+        )
+        return response.data[0].embedding[: self.output_dim]
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        inputs = self.tok(texts, padding=True, truncation=True, return_tensors="pt").to(self.model.device)
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-            pooled = self._mean_pool(outputs, inputs)
-            pooled = pooled[:, :self.output_dim]  # ✅ DB 차원에 맞게 슬라이싱
-            vectors = pooled.to(torch.float32).cpu().numpy()
-        return vectors.tolist()
+        """여러 문서에 대한 임베딩 요청"""
+        embeddings = []
+        for text in texts:
+            vec = self._get_embedding(text)
+            embeddings.append(vec)
+        return embeddings
 
     def embed_query(self, text: str) -> List[float]:
-        inputs = self.tok([text], padding=True, truncation=True, return_tensors="pt").to(self.model.device)
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-            pooled = self._mean_pool(outputs, inputs)
-            pooled = pooled[:, :self.output_dim]
-            vector = pooled.to(torch.float32).cpu().numpy()[0]
-        return vector.tolist()
+        """질문(query)에 대한 임베딩 요청"""
+        return self._get_embedding(text)
 
 
 # === RerankRetriever 정의 ===
@@ -80,26 +93,30 @@ class RerankRetriever:
     def _setup(self):
         embeddings = QwenEmbeddings(model_name=self.embedding_model)
 
+        # === Dense (FAISS)
         content_db = FAISS.load_local(
             self.faiss_db_path, embeddings, allow_dangerous_deserialization=True
         )
-
         dense_retriever = content_db.as_retriever(
             search_type="similarity", search_kwargs={"k": self.top_k}
         )
 
+        # === Sparse (BM25)
         all_docs = list(content_db.docstore._dict.values())
         sparse_retriever = BM25Retriever.from_documents(all_docs)
         sparse_retriever.k = self.top_k
 
+        # === Ensemble
         hybrid_retriever = EnsembleRetriever(
             retrievers=[sparse_retriever, dense_retriever],
             weights=list(self.ensemble_weights),
         )
 
+        # === Cross-Encoder Reranker
         cross_encoder = HuggingFaceCrossEncoder(model_name=self.reranker_model)
         compressor = CrossEncoderReranker(model=cross_encoder, top_n=self.top_k)
 
+        # === 최종 ContextualCompressionRetriever
         self.retriever = ContextualCompressionRetriever(
             base_retriever=hybrid_retriever,
             base_compressor=compressor,
@@ -113,11 +130,12 @@ class RerankRetriever:
 # === LangGraph용 Node 함수 ===
 retriever_instance = RerankRetriever(
     faiss_db_path="/home/user/Desktop/jiseok/capstone/RAG/DB/construction_safety_guidelines_faiss",
-    embedding_model="Qwen/Qwen3-Embedding-4B",
+    embedding_model=embedder_model_name,
     reranker_model="BAAI/bge-reranker-v2-m3",
     top_k=8,
     ensemble_weights=(0.3, 0.7),
 )
+
 
 def retrieve_node(state: Dict[str, Any]) -> Dict[str, Any]:
     query = state["query"]

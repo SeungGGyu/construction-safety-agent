@@ -1,4 +1,6 @@
 # core/rewrite.py
+# 1025 query rewrite 고도화 필요
+
 import re
 from langchain_core.messages import HumanMessage
 from core.agentstate import AgentState

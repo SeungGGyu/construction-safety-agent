@@ -1,8 +1,10 @@
 from typing import Annotated, Sequence, TypedDict, Any
 from typing_extensions import NotRequired
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage          # ✅ 최신 구조
 from langgraph.graph.message import add_messages
-from langchain.schema import Document  # 문서 컨테이너
+from langchain_core.documents import Document            # ✅ 최신 구조
+# from langchain.schema import Document
+  # 문서 컨테이너
 
 class AgentState(TypedDict):
     # 1) 대화 이력: 그래프 전체에서 계속 누적

@@ -140,6 +140,8 @@ def generate(state: AgentState):
     body_answer = call_qwen(prompt_text)
     body_answer = format_sections(body_answer)
 
+
+
     # ✅ 존재하지 않는 인용번호 제거 ([#6] 이상 등)
     max_idx = len(src_list)
     invalid_refs = re.findall(r"\[\s*#\s*(\d+)\s*\]", body_answer)
@@ -170,3 +172,4 @@ def generate(state: AgentState):
         "candidate_answer": answer,
         "retries": state.get("retries", 0) + 1,
     }
+

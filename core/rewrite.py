@@ -69,4 +69,8 @@ def rewrite(state: AgentState):
         "query": base,
         "query_candidates": [base, boosted],
         "retries": state.get("retries", 0) + 1,
+<<<<<<< HEAD
     }
+=======
+    }
+>>>>>>> jiseok

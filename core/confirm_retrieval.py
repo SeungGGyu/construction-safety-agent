@@ -9,7 +9,7 @@ def confirm_retrieval(state: AgentState):
     """
     docs = state.get("retrieved", [])
     if not docs:
-        print("\n⚠️ 검색된 문서가 없습니다. 쿼리를 재작성합니다.")
+        print("\n  검색된 문서가 없습니다. 쿼리를 재작성합니다.")
         return {"route": "rewrite"}
 
     print("\n🔍 === 검색 결과 미리보기 ===")
@@ -74,3 +74,4 @@ def confirm_retrieval(state: AgentState):
     # ✅ route
     "route": "generate",
 }
+

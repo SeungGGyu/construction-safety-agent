@@ -1,11 +1,15 @@
 from core.agentstate import AgentState
-from core.llm_utils import call_llm  # ✅ 공통 LLM 호출 유틸 사용
+from core.llm_utils import call_llm
+from langchain.schema import AIMessage # ✅ 공통 LLM 호출 유틸 사용
+import traceback
+import json
 
 
 # === 1. 보고서 생성 함수 ===
 def generate_accident_report(rag_output: str) -> str:
-    """RAG 기반 사고 정보를 입력받아 건설 사고 재발 방지 대책 보고서를 생성"""
-
+    """
+    RAG 기반 사고 정보를 입력받아 건설 사고 재발 방지 대책 보고서를 생성
+    """
     system_message = {
         "role": "system",
         "content": """
@@ -23,17 +27,34 @@ def generate_accident_report(rag_output: str) -> str:
     }
 
     try:
-        # ✅ 공통 유틸 사용 (llm_utils.py 내부에서 모델, URL, 토큰 모두 처리)
+        print("🧠 [LLM 호출 시작] 보고서 생성 요청 중...")
         report_text = call_llm(
             [system_message, user_message],
             temperature=0.3,
             top_p=0.9,
             max_tokens=25000
         )
+
+        if not report_text or "⚠️" in report_text:
+            print("⚠️ LLM 응답 비정상 또는 실패:", report_text)
+            return "보고서 생성 실패 (LLM 응답 없음 또는 오류)"
+
+        print("✅ 보고서 생성 완료")
         return report_text
+
     except Exception as e:
-        print(f"⚠️ 보고서 생성 실패: {e}")
-        return "보고서 생성 실패"
+        print("❌ 보고서 생성 중 예외 발생!")
+        print(f"예외 타입: {type(e).__name__}")
+        print(f"예외 메시지: {e}")
+        print(traceback.format_exc())
+
+        # 혹시 response.text가 JSON 파싱 실패할 경우 확인
+        try:
+            print("응답 디버그 정보:", json.dumps(report_text, ensure_ascii=False)[:300])
+        except Exception:
+            pass
+
+        return "보고서 생성 실패 (예외 발생)"
 
 
 # === 2. LangGraph 연동용 노드 함수 ===
@@ -49,5 +70,11 @@ def generate_accident_report_node(state: AgentState):
     # 2️⃣ 보고서 생성
     report_text = generate_accident_report(rag_output)
 
-    # 3️⃣ LangGraph state 업데이트
-    return {"report": report_text}
+    # 3️⃣ LangGraph state에 AI 메시지 추가 (✅ 핵심 수정)
+    state["messages"].append(AIMessage(content=report_text))
+
+    # 4️⃣ report 키에도 저장 (선택적, 이후 노드 접근용)
+    state["report"] = report_text
+
+    # 5️⃣ 전체 state 반환
+    return state

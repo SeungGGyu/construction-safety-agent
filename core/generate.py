@@ -1,18 +1,12 @@
 # core/generate.py
 import re
-import requests
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import AIMessage
 from core.agentstate import AgentState
+from core.llm_utils import call_llm  # ✅ 공용 LLM 호출 유틸 가져오기
 
 
-# === Qwen API 설정 ===
-LLM_URL = "http://211.47.56.73:8908"  # ✅ OpenAI 호환 API 엔드포인트
-LLM_TOKEN = "token-abc123"
-LLM_MODEL = "Qwen/Qwen3-30B-A3B-GPTQ-Int4"
-
-
-# === 프롬프트 정의 (관련 규정은 제외) ===
+# === 프롬프트 정의 ===
 RAG_PROMPT = ChatPromptTemplate.from_messages([
     ("system",
      """
@@ -27,7 +21,7 @@ RAG_PROMPT = ChatPromptTemplate.from_messages([
 - ⚠️ 인용 번호는 반드시 CONTEXT 내 존재하는 번호만 사용하십시오.  
   예: CONTEXT에 [#1], [#2], [#3], [#4], [#5]만 있다면 이 중에서만 선택해야 합니다.  
   존재하지 않는 번호([#6], [#7], [#8] 등)는 절대 사용하지 마십시오.  
-- **관련 규정**은 작성하지 마세요. 관련 규정은 코드에서 SOURCES를 기반으로 자동 생성됩니다.  
+- **관련 규정**은 작성하지 마세요. 관련 규정은 SOURCES를 기반으로 코드에서 자동 생성됩니다.  
 </instruction>
 
 <requirements>
@@ -62,48 +56,14 @@ RAG_PROMPT = ChatPromptTemplate.from_messages([
 
 
 
-# === Qwen API 호출 ===
-def call_qwen(prompt: str) -> str:
-    """로컬 Qwen 서버 호출 (OpenAI 호환 API 방식)"""
-    payload = {
-        "model": LLM_MODEL,
-        "messages": [
-            {"role": "system", "content": "당신은 건설 안전 지침 전용 어시스턴트입니다."},
-            {"role": "user", "content": prompt}
-        ],
-        "max_tokens": 4000,
-        "temperature": 0.3,
-        "top_p": 0.9,
-    }
-    headers = {
-        "Authorization": f"Bearer {LLM_TOKEN}",
-        "Content-Type": "application/json"
-    }
-
-    try:
-        response = requests.post(
-            f"{LLM_URL}/v1/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=180
-        )
-        response.raise_for_status()
-        data = response.json()
-        return data["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        print(f"⚠️ LLM 호출 실패: {e}")
-        if 'response' in locals():
-            print(f"서버 응답: {response.text}")
-        return "정보 부족. 추가 문서를 제시해 주세요."
-
-
-# === 출력 포맷 보정 함수 ===
+# === 출력 포맷 보정 ===
 def format_sections(text: str) -> str:
-    """사고 개요 / 위험 요인 / 즉시 조치 구분이 명확하게 되도록 포맷 보정"""
+    """사고 개요 / 위험 요인 / 즉시 조치 구분을 명확하게 함"""
     text = re.sub(r'(사고\s*개요\s*[:：])', r'\n\n**\1** ', text)
     text = re.sub(r'(위험\s*요인\s*[:：])', r'\n\n**\1** ', text)
     text = re.sub(r'(즉시\s*조치\s*[:：])', r'\n\n**\1** ', text)
     return text.strip()
+
 
 
 # === 보고서 생성 ===
@@ -120,8 +80,8 @@ def generate(state: AgentState):
     src_list = [
         {
             "idx": i + 1,
-            "filename": d.metadata.get("filename", "?"),
-            "page": d.metadata.get("page", "?")
+            "filename": d.metadata.get("source", "?"),  # ✅ file 대신 source 사용
+            "section": d.metadata.get("section", "?")
         }
         for i, d in enumerate(sel)
     ]
@@ -131,16 +91,17 @@ def generate(state: AgentState):
     ctx = "\n\n".join(f"[{i+1}] {d.page_content}" for i, d in enumerate(sel[:8]))
     tool_out = state.get("tool_output", "")
 
-    # ✅ 사용할 인용 번호 명시
+    # ✅ 인용 번호 명시
     valid_refs = ", ".join(f"#{s['idx']}" for s in src_list)
     prompt_text = RAG_PROMPT.format(context=ctx, tool_output=tool_out, question=q)
     prompt_text += f"\n\n⚠️ 사용할 수 있는 인용 번호는 다음과 같습니다: {valid_refs}"
 
-    # ✅ Qwen 호출
-    body_answer = call_qwen(prompt_text)
+    # ✅ Qwen 호출 (llm_utils 공용 함수 사용)
+    body_answer = call_llm([
+        {"role": "system", "content": "당신은 건설 안전 지침 전용 어시스턴트입니다."},
+        {"role": "user", "content": prompt_text}
+    ])
     body_answer = format_sections(body_answer)
-
-
 
     # ✅ 존재하지 않는 인용번호 제거 ([#6] 이상 등)
     max_idx = len(src_list)
@@ -152,10 +113,10 @@ def generate(state: AgentState):
         except Exception:
             pass
 
-    # ✅ 관련 규정 섹션 (sources 기반)
+    # ✅ 관련 규정 섹션
     if src_list:
         related = "\n".join(
-            f"- {s['filename']}, p.{s['page']} [#{s['idx']}]"
+            f"- {s['filename']} / {s['section']} [#{s['idx']}]"
             for s in src_list if s["filename"] != "?"
         )
         related_section = f"\n\n**관련 규정**:\n{related}" if related else "\n\n**관련 규정**:\n정보 부족."
@@ -172,4 +133,3 @@ def generate(state: AgentState):
         "candidate_answer": answer,
         "retries": state.get("retries", 0) + 1,
     }
-

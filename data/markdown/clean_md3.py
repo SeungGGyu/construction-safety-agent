@@ -2,7 +2,7 @@ import os
 import re
 
 # === 1️⃣ 대상 폴더 경로 ===
-target_dir = "/home/user/Desktop/jiseok/capstone/RAG/data/data_md"
+target_dir = "/home/user/Desktop/jiseok/capstone/RAG/construction-safety-agent/data/data_md"
 
 # === 2️⃣ 모든 .md 파일 순회 ===
 for filename in os.listdir(target_dir):

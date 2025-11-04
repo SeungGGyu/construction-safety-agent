@@ -2,18 +2,20 @@
 import re
 from langchain_core.messages import HumanMessage
 from core.agentstate import AgentState
-from core.kanana import KANANA  # ✅ 내부에서 LLM 직접 불러오기 (KANANA 사용)
+from core.llm_utils import call_llm  # ✅ 공용 LLM 호출 유틸 사용
 
-def _is_korean(t): 
+
+def _is_korean(t):
     return re.search(r"[가-힣]", t or "") is not None
 
-def _clean(s): 
+
+def _clean(s):
     return re.sub(r"\s+", " ", s.strip().strip("'\"`"))
+
 
 def rewrite(state: AgentState):
     """
-    검색 쿼리 재작성 모듈
-    (main.py에서 llm 인자를 따로 넘기지 않아도 내부에서 KANANA를 직접 호출)
+    검색 쿼리 재작성 모듈 (공용 call_llm 기반)
     """
     print("==== [QUERY REWRITE: 규정 탐색용] ====")
     q = state.get("query") or state["messages"][0].content
@@ -50,15 +52,18 @@ def rewrite(state: AgentState):
 </example>
 """
 
-    # ✅ LLM 호출 (KANANA 사용)
-    prompt = f"{system_prompt}\n\n입력:\n{q}\n출력:"
-    base = _clean(KANANA.invoke([HumanMessage(content=prompt)]).content or q)
+    # ✅ LLM 호출 (공용 call_llm 사용)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"입력:\n{q}\n출력:"}
+    ]
+    base = _clean(call_llm(messages) or q)
 
-    # 부스팅 쿼리 생성
+    # ✅ 부스팅 쿼리 생성
     suffix_ko = " 법규 기준 지침 체크리스트 조항"
     boosted = _clean((base + suffix_ko).rstrip(" ?"))
 
-    # 언어 보정
+    # ✅ 언어 보정
     if not _is_korean(base):
         base = _clean(q)
     if not _is_korean(boosted):
@@ -69,8 +74,4 @@ def rewrite(state: AgentState):
         "query": base,
         "query_candidates": [base, boosted],
         "retries": state.get("retries", 0) + 1,
-<<<<<<< HEAD
     }
-=======
-    }
->>>>>>> jiseok

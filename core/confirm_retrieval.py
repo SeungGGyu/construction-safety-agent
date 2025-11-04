@@ -1,11 +1,29 @@
 # core/confirm_retrieval.py
+import re
 from core.agentstate import AgentState
 from langchain.schema import Document
+from bs4 import BeautifulSoup
+
+def _clean_html(text: str) -> str:
+    """HTML 태그 제거 및 줄바꿈 유지"""
+    soup = BeautifulSoup(text, "html.parser")
+    text = soup.get_text(separator="\n", strip=True)
+    return _prettify_text(text)
+
+def _prettify_text(text: str) -> str:
+    """표·기호 구조가 깨진 텍스트를 사람이 읽기 좋게 재정렬"""
+    text = re.sub(r"[\u2027•․·]+", "·", text)        # 중간점 통일
+    text = re.sub(r"\s+", " ", text)                 # 과도한 공백 제거
+    text = re.sub(r"(\.)([가-힣])", r"\1\n\2", text) # 문장 구분시 줄바꿈 추가
+    text = re.sub(r"(·\s*)", r"\n- ", text)          # · 기호를 리스트 형식으로 변환
+    text = re.sub(r"([가-힣])(\s*:\s*)", r"\1\n", text)
+    text = text.strip()
+    return text
 
 def confirm_retrieval(state: AgentState):
     """
     Human-in-the-loop 확인 단계 (CLI 버전)
-    터미널에서 검색 결과를 보여주고, 사용자에게 yes/no 및 제외 문서를 입력받음.
+    - 검색 결과(청킹 데이터)를 사람이 검토하고 필요 시 제외할 수 있음
     """
     docs = state.get("retrieved", [])
     if not docs:
@@ -13,11 +31,20 @@ def confirm_retrieval(state: AgentState):
         return {"route": "rewrite"}
 
     print("\n🔍 === 검색 결과 미리보기 ===")
+
+    # === 모든 검색 문서 표시 ===
     for i, doc in enumerate(docs):
-        filename = doc.metadata.get("filename", "?")
-        page = doc.metadata.get("page", "?")
-        preview = doc.page_content.strip().replace("\n", " ")[:300]
-        print(f"\n[{i+1}] ({filename} p.{page})\n{preview}...")
+        meta = doc.metadata
+        file = meta.get("source")
+        section = meta.get("section")
+
+        clean_text = _clean_html(doc.page_content.strip())
+
+        print(f"\n📄 [{i+1}] 문서 정보")
+        print(f"   ┣ 파일명: {file}")
+        print(f"   ┣ 섹션: {section}")
+        print(f"   ┗ 내용:\n{clean_text}")
+        print("-" * 120)
 
     # === yes/no 입력 ===
     while True:
@@ -36,17 +63,13 @@ def confirm_retrieval(state: AgentState):
     if exclude_input:
         try:
             max_idx = len(docs)
-            # 1~N → 0~N-1 변환, 범위 확인
             excluded_indices = [
                 int(x.strip()) - 1
                 for x in exclude_input.split(",")
                 if x.strip().isdigit() and 1 <= int(x.strip()) <= max_idx
             ]
-
-            # ✅ 표시할 때는 항상 사용자 기준 번호(+1)
             display_nums = [i + 1 for i in excluded_indices]
             print(f"🚫 제외 문서 번호: {display_nums}")
-
         except Exception:
             print("⚠️ 제외 번호 입력을 이해할 수 없습니다. 모든 문서를 유지합니다.")
             excluded_indices = []
@@ -56,22 +79,18 @@ def confirm_retrieval(state: AgentState):
     print(f"\n✅ {len(selected_docs)}개 문서를 유지하고 다음 단계로 진행합니다.")
 
     return {
-    # ✅ 덮어쓰기: retrieved, selected, docs_text 모두 새 리스트로 대체
-    "retrieved": selected_docs,
-    "selected": selected_docs,
-    "docs_text": "\n\n".join(f"[{i+1}] {d.page_content}" for i, d in enumerate(selected_docs)),
-
-    # ✅ sources도 새로 만들어줌 (generate에 그대로 전달됨)
-    "sources": [
-        {
-            "idx": i + 1,
-            "filename": d.metadata.get("filename", "?"),
-            "page": d.metadata.get("page", "?"),
-        }
-        for i, d in enumerate(selected_docs)
-    ],
-
-    # ✅ route
-    "route": "generate",
-}
-
+        "retrieved": selected_docs,
+        "selected": selected_docs,
+        "docs_text": "\n\n".join(
+            f"[{i+1}] {_clean_html(d.page_content)}" for i, d in enumerate(selected_docs)
+        ),
+        "sources": [
+            {
+                "idx": i + 1,
+                "file": d.metadata.get("file", "?"),
+                "section": d.metadata.get("section", "?"),
+            }
+            for i, d in enumerate(selected_docs)
+        ],
+        "route": "generate",
+    }

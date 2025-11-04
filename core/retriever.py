@@ -1,55 +1,31 @@
-from transformers import AutoModel, AutoTokenizer
-import torch
-from langchain.embeddings.base import Embeddings
+import os
+from typing import Dict, Any, List
 from langchain.schema import Document
 from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import OpenAIEmbeddings
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers.ensemble import EnsembleRetriever
 from langchain.retrievers.contextual_compression import ContextualCompressionRetriever
 from langchain_community.cross_encoders import HuggingFaceCrossEncoder
 from langchain.retrievers.document_compressors import CrossEncoderReranker
-from typing import Dict, Any, List
 
 
-# === Qwen 전용 Embeddings 클래스 ===
-class QwenEmbeddings(Embeddings):
-    def __init__(self, model_name="Qwen/Qwen3-Embedding-4B", output_dim=768):
-        self.tok = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        self.model = AutoModel.from_pretrained(
-            model_name,
-            trust_remote_code=True,
-            device_map="auto",
-            torch_dtype=torch.bfloat16
-        )
-        self.output_dim = output_dim
+# === Qwen API 기반 Embedding 클래스 ===
+def get_qwen_api_embeddings():
+    """
+    Qwen3-Embedding-4B API 호출 기반 Embedding
+    """
+    embedder_model_name = "Qwen/Qwen3-Embedding-4B"
+    embedder_base_url = "http://211.47.56.71:15653/v1"
+    embedder_api_key = "token-abc123"
 
-    def _mean_pool(self, outputs, inputs):
-        # CLS/SEP 무시하고 평균 pooling
-        token_embeddings = outputs.last_hidden_state
-        attention_mask = inputs["attention_mask"]
-        mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
-        sum_embeddings = torch.sum(token_embeddings * mask_expanded, 1)
-        sum_mask = torch.clamp(mask_expanded.sum(1), min=1e-9)
-        mean_pooled = sum_embeddings / sum_mask
-        return mean_pooled
-
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        inputs = self.tok(texts, padding=True, truncation=True, return_tensors="pt").to(self.model.device)
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-            pooled = self._mean_pool(outputs, inputs)
-            pooled = pooled[:, :self.output_dim]  # ✅ DB 차원에 맞게 슬라이싱
-            vectors = pooled.to(torch.float32).cpu().numpy()
-        return vectors.tolist()
-
-    def embed_query(self, text: str) -> List[float]:
-        inputs = self.tok([text], padding=True, truncation=True, return_tensors="pt").to(self.model.device)
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-            pooled = self._mean_pool(outputs, inputs)
-            pooled = pooled[:, :self.output_dim]
-            vector = pooled.to(torch.float32).cpu().numpy()[0]
-        return vector.tolist()
+    print(f"🌐 Qwen Embedding API 연결 중: {embedder_base_url}")
+    embeddings = OpenAIEmbeddings(
+        model=embedder_model_name,
+        base_url=embedder_base_url,
+        api_key=embedder_api_key,
+    )
+    return embeddings
 
 
 # === RerankRetriever 정의 ===
@@ -61,13 +37,11 @@ class RerankRetriever:
     def __init__(
         self,
         faiss_db_path: str,
-        embedding_model: str,
-        reranker_model: str,
+        reranker_model: str = "BAAI/bge-reranker-v2-m3",
         top_k: int = 10,
         ensemble_weights: tuple = (0.5, 0.5),
     ):
         self.faiss_db_path = faiss_db_path
-        self.embedding_model = embedding_model
         self.reranker_model = reranker_model
         self.top_k = top_k
         self.ensemble_weights = ensemble_weights
@@ -78,28 +52,41 @@ class RerankRetriever:
         print("✅ RerankRetriever 생성 완료")
 
     def _setup(self):
-        embeddings = QwenEmbeddings(model_name=self.embedding_model)
+        # === 1️⃣ Qwen API Embeddings ===
+        embeddings = get_qwen_api_embeddings()
+
+        # === 2️⃣ FAISS DB 로드 ===
+        if not os.path.exists(self.faiss_db_path):
+            raise FileNotFoundError(f"❌ DB 경로를 찾을 수 없습니다: {self.faiss_db_path}")
 
         content_db = FAISS.load_local(
-            self.faiss_db_path, embeddings, allow_dangerous_deserialization=True
+            self.faiss_db_path,
+            embeddings,
+            allow_dangerous_deserialization=True
         )
 
+        # === 3️⃣ Dense Retriever (FAISS) ===
         dense_retriever = content_db.as_retriever(
-            search_type="similarity", search_kwargs={"k": self.top_k}
+            search_type="similarity",
+            search_kwargs={"k": self.top_k}
         )
 
+        # === 4️⃣ Sparse Retriever (BM25) ===
         all_docs = list(content_db.docstore._dict.values())
         sparse_retriever = BM25Retriever.from_documents(all_docs)
         sparse_retriever.k = self.top_k
 
+        # === 5️⃣ Hybrid Retriever (Dense + Sparse) ===
         hybrid_retriever = EnsembleRetriever(
             retrievers=[sparse_retriever, dense_retriever],
             weights=list(self.ensemble_weights),
         )
 
+        # === 6️⃣ Cross-Encoder Reranker ===
         cross_encoder = HuggingFaceCrossEncoder(model_name=self.reranker_model)
         compressor = CrossEncoderReranker(model=cross_encoder, top_n=self.top_k)
 
+        # === 7️⃣ Contextual Compression Retriever ===
         self.retriever = ContextualCompressionRetriever(
             base_retriever=hybrid_retriever,
             base_compressor=compressor,
@@ -112,12 +99,12 @@ class RerankRetriever:
 
 # === LangGraph용 Node 함수 ===
 retriever_instance = RerankRetriever(
-    faiss_db_path="/home/user/Desktop/jiseok/capstone/RAG/DB/construction_safety_guidelines_faiss",
-    embedding_model="Qwen/Qwen3-Embedding-4B",
+    faiss_db_path="/home/user/Desktop/jiseok/capstone/RAG/construction-safety-agent/DB",
     reranker_model="BAAI/bge-reranker-v2-m3",
     top_k=8,
-    ensemble_weights=(0.3, 0.7),
+    ensemble_weights=(0.5, 0.5),
 )
+
 
 def retrieve_node(state: Dict[str, Any]) -> Dict[str, Any]:
     query = state["query"]
@@ -129,7 +116,7 @@ def retrieve_node(state: Dict[str, Any]) -> Dict[str, Any]:
         for i, doc in enumerate(docs)
     )
 
-    # sources: filename/page/idx만 간결하게 정리
+    # sources 정리
     sources = [
         {
             "idx": i + 1,

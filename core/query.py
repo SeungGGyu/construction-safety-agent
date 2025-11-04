@@ -3,8 +3,8 @@
 
 import pandas as pd
 
-train = pd.read_csv('/home/user/Desktop/jiseok/capstone/RAG/data/train_preprocessing.csv')
-test = pd.read_csv('/home/user/Desktop/jiseok/capstone/RAG/data/test_preprocessing.csv')
+train = pd.read_csv('/home/user/Desktop/jiseok/capstone/RAG/construction-safety-agent/data/train_preprocessing.csv')
+test = pd.read_csv('/home/user/Desktop/jiseok/capstone/RAG/construction-safety-agent/data/test_preprocessing.csv')
 
 data_train = train.apply(
     lambda row: {
